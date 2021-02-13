@@ -3,7 +3,8 @@
 # Todo: 
 #   - combined option parsing (i.e., -iv is equivalent to -i -v)
 #   - create and install manpage
-#   - create restore option (or separate restore utility?)
+#   - create restore option
+#   - create a rollback option
 
 #########################################################################
 #
@@ -72,6 +73,11 @@ initialize() {
     # make sure TRASHDIR exists and is structured
     mkdir -p $TRASHDIR/files
     mkdir -p $TRASHDIR/info
+    mkdir -p $TRASHDIR/data
+    touch $TRASHDIR/data/transactions
+
+    # get the next transaction id
+    TRANSACTION=$(expr `tail -n 1 $TRASHDIR/data/transactions | cut -f 1` + 1)
 }
 
 # isOpt: checks if a given parameter is an option
@@ -96,8 +102,7 @@ parseOpts() {
     if [ $# -eq 0 ]
     # must have at least 1 argument
     then
-        echo "Error: no arguments provided"; echo
-        usage
+        echo "Error: no arguments provided"
         exit
     else
         while [ $# -ne 0 ]
@@ -144,8 +149,7 @@ parseOpts() {
                     then
                         DELETELIST[${#DELETELIST[@]}]=$1
                     else
-                        echo "Error: unrecognized argument '$1'"; echo
-                        usage
+                        echo "Error: unrecognized argument '$1'"
                         exit
                     fi
                     ;;
@@ -161,18 +165,17 @@ parseOpts() {
 parseConfirm() {
     case $1 in
         "Y" | "y" | "YES" | "Yes" | "yes")
-            eval "$1='y'" 
+            confirm='y' 
             ;;
         "N" | "n" | "NO" | "No" | "no")
-            eval "$1='n'" 
+            confirm='n' 
             ;;
         "A" | "a" | "ALL" | "All" | "all")
             INTERACTIVE=0
-            eval "$1='a'" 
+            confirm='a' 
             ;;
         *)
-            echo "Error: unrecognized confirmation '$1'...aborting"; echo
-            Usage
+            echo "Error: unrecognized confirmation '$1'"
             exit
             ;;
     esac
@@ -185,12 +188,11 @@ moveFile() {
     if [ $VERBOSITYLEVEL == 0 ]
     then
         mv -f $OPTIONSLIST $1 $TRASHDIR/files/ > /dev/null
-    elif [ $VERBOSITYLEVEL == 1 ]
-    then
-        mv -f $OPTIONSLIST $1 $TRASHDIR/files/
     elif [ $VERBOSITYLEVEL == 2 ]
     then
         printf "mv: "
+        mv -f $OPTIONSLIST $1 $TRASHDIR/files/
+    else
         mv -f $OPTIONSLIST $1 $TRASHDIR/files/
     fi
 }
@@ -201,9 +203,10 @@ moveFile() {
 updateTrashInfo() {
     # build the trashinfo command
     fullpath=`realpath $1`
+    basename=`basename $1`
     date=`date "$DATEFORMAT"`
     contents="[Trash Info]\nPath=$fullpath\nDeletionDate=$date"
-    cmd="echo -e \"$contents\" > $TRASHDIR/info/$i.trashinfo"
+    cmd="echo -e \"$contents\" > $TRASHDIR/info/$basename.trashinfo"
 
     # adjust command and prepended output for verbosity level
     if [ $VERBOSITYLEVEL == 0 ]
@@ -231,6 +234,16 @@ updateTrashInfo() {
     fi
 }
 
+# logTransaction: logs the items that were trashed
+# parameters: a list of items that were trashed
+# return: none
+logTransaction() {
+    logFile="$TRASHDIR/data/transactions"
+    date=`date "$DATEFORMAT"`
+
+    echo -e "$TRANSACTION\t$1\t$date" >> $logFile
+}
+
 # doSoftDelete: trash all the listed items
 # params: none
 # return: none
@@ -244,13 +257,13 @@ doSoftDelete() {
             printf "trash: move '$i' to trash? "
             read confirm
             parseConfirm $confirm
-            decision=$?
         fi
 
         if [ $confirm = "y" ] || [ $confirm = "a" ]
         then
             moveFile $i
             updateTrashInfo $i
+            logTransaction $i
         fi
     done
 }
