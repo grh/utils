@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# Todo: 
+#   - combined option parsing (i.e., -iv is equivalent to -i -v)
+#   - create and install manpage
+#   - create restore option (or separate restore utility?)
+
 #########################################################################
 #
 # trash - a soft delete utility for Linux
