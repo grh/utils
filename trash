@@ -1,0 +1,255 @@
+#!/bin/bash
+
+#########################################################################
+#
+# trash - a soft delete utility for Linux
+#
+# This script moves listed items into the local trash directory and
+# updates trashinfo as required. 
+#
+# MIT License
+#
+# Copyright (c) 2021 Guymon Hall
+
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files (the
+# “Software”), to deal in the Software without restriction, including
+# without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so, subject to
+# the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+# CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+#########################################################################
+
+# usage: prints usage info and exits
+# params: none
+# return: none
+usage() {
+    echo "trash - a soft delete utility for Linux ($VERSION)
+    
+usage: trash [options] [item1 ...]
+  -f, --force           skip confirmation for all items
+  -h, --help            show this help and exit
+  -i, --interactive     confirm trash items (y-yes, n-no, a-all)
+  -q, --quiet           suppress any output
+  -v, --verbose         list items as they are deleted
+  -vv                   additional verbosity
+  --version             show version and exit
+
+  This script moves listed items into the local
+  trash directory and updates trashinfo."
+}
+
+# initialize: assigns script variables
+# params: none
+# return: none
+initialize() {
+    DATEFORMAT="+%Y-%m-%dT%H:%M:%S"
+    DELETELIST=()
+    INTERACTIVE=0
+    OPTIONSLIST=()
+    OPTS=("-f" "--force" "-h" "--help" "-i" "--interactive" "-q" "--quiet" "-v" "--verbose" "--version" "-vv")
+    TRASHDIR=$HOME/.local/share/Trash
+    VERBOSITYLEVEL=-1
+    VERSION=1.0
+
+    # make sure TRASHDIR exists and is structured
+    mkdir -p $TRASHDIR/files
+    mkdir -p $TRASHDIR/info
+}
+
+# isOpt: checks if a given parameter is an option
+# params: any item
+# return: 1 if item is in list of options, 0 otherwise
+isOpt() {
+    for opt in ${OPTS[@]}
+    do
+        if [ $1 = $opt ]
+        then
+            return 1
+        fi
+    done
+
+    return 0
+}
+
+# parseOpts: parses command line arguments
+# parameters: the command line arguments array $@
+# return: none
+parseOpts() {
+    if [ $# -eq 0 ]
+    # must have at least 1 argument
+    then
+        echo "Error: no arguments provided"; echo
+        usage
+        exit
+    else
+        while [ $# -ne 0 ]
+        # loop through arguments
+        do
+            # check if argument is both a file and an option
+            isOpt $1; argIsOpt=$?
+            if [ $argIsOpt = 1 ] && { [ -f $1 ] || [ -d $1 ]; }
+            then
+                echo "Error: $1 is both an option and a file/directory"
+                exit
+            fi
+
+            # at this point, we've determined that there is no
+            # option/filename conflict, so we can parse out each
+            # argument into either the options list or delete list
+            case $1 in
+                "-f" | "--force")
+                    INTERACTIVE=0
+                    ;;
+                "-h" | "--help")
+                    usage
+                    exit
+                    ;;
+                "-i" | "--interactive")
+                    INTERACTIVE=1
+                    ;;
+                "-q" | "--quiet")
+                    VERBOSITYLEVEL=0
+                    ;;
+                "-v" | "--verbose")
+                    VERBOSITYLEVEL=1
+                    ;;
+                "--version")
+                    echo "delete - version $VERSION"
+                    exit
+                    ;;
+                -vv)
+                    VERBOSITYLEVEL=2
+                    OPTIONSLIST[${#OPTIONSLIST[@]}]="-v"
+                    ;;
+                *)
+                    if [ -f $1 ] || [ -d $1 ]
+                    then
+                        DELETELIST[${#DELETELIST[@]}]=$1
+                    else
+                        echo "Error: unrecognized argument '$1'"; echo
+                        usage
+                        exit
+                    fi
+                    ;;
+            esac
+            shift
+        done
+    fi
+}
+
+# parseConfirm: parses interactive confirmation input
+# parameters: user input from terminal
+# return: 1 if users confirm trash, 0 otherwise
+parseConfirm() {
+    case $1 in
+        "Y" | "y" | "YES" | "Yes" | "yes")
+            eval "$1='y'" 
+            ;;
+        "N" | "n" | "NO" | "No" | "no")
+            eval "$1='n'" 
+            ;;
+        "A" | "a" | "ALL" | "All" | "all")
+            INTERACTIVE=0
+            eval "$1='a'" 
+            ;;
+        *)
+            echo "Error: unrecognized confirmation '$1'...aborting"; echo
+            Usage
+            exit
+            ;;
+    esac
+}
+
+# moveFile: moves an item to the trash directory
+# params: the item to move
+# return: none
+moveFile() {
+    if [ $VERBOSITYLEVEL == 0 ]
+    then
+        mv -f $OPTIONSLIST $1 $TRASHDIR/files/ > /dev/null
+    elif [ $VERBOSITYLEVEL == 1 ]
+    then
+        mv -f $OPTIONSLIST $1 $TRASHDIR/files/
+    elif [ $VERBOSITYLEVEL == 2 ]
+    then
+        printf "mv: "
+        mv -f $OPTIONSLIST $1 $TRASHDIR/files/
+    fi
+}
+
+# updateTrashInfo: creates the trashinfo file for a trashed item
+# params: the item that was trashed
+# return: none
+updateTrashInfo() {
+    # build the trashinfo command
+    fullpath=`realpath $1`
+    date=`date "$DATEFORMAT"`
+    contents="[Trash Info]\nPath=$fullpath\nDeletionDate=$date"
+    cmd="echo -e \"$contents\" > $TRASHDIR/info/$i.trashinfo"
+
+    # adjust command and prepended output for verbosity level
+    if [ $VERBOSITYLEVEL == 0 ]
+    then
+        cmd+=" > /dev/null"
+    fi
+
+    if [ $VERBOSITYLEVEL == 2 ]
+    then
+            printf "bash: "
+            echo $cmd
+    fi
+
+    eval $cmd
+
+    # output based on verbosity level
+    if [ $VERBOSITYLEVEL == 1 ]
+    then
+        echo "Trashed '$1'"
+    fi
+
+    if [ $VERBOSITYLEVEL == 2 ]
+    then
+        echo "trash: Trashed '$1'"
+    fi
+}
+
+# doSoftDelete: trash all the listed items
+# params: none
+# return: none
+doSoftDelete() {
+    confirm="a"
+
+    for i in ${DELETELIST[@]}
+    do
+        if [ $INTERACTIVE == 1 ]
+        then
+            printf "trash: move '$i' to trash? "
+            read confirm
+            parseConfirm $confirm
+            decision=$?
+        fi
+
+        if [ $confirm = "y" ] || [ $confirm = "a" ]
+        then
+            moveFile $i
+            updateTrashInfo $i
+        fi
+    done
+}
+
+initialize
+parseOpts $@
+doSoftDelete
