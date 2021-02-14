@@ -47,6 +47,7 @@ usage() {
 usage: trash [options] [item1 ...]
   -f, --force           skip confirmation for all items
   -h, --help            show this help and exit
+  --history             show transaction history
   -i, --interactive     confirm trash items (y-yes, n-no, a-all)
   -q, --quiet           suppress any output
   -v, --verbose         list items as they are deleted
@@ -65,7 +66,7 @@ initialize() {
     DELETELIST=()
     INTERACTIVE=0
     OPTIONSLIST=()
-    OPTS=("-f" "--force" "-h" "--help" "-i" "--interactive" "-q" "--quiet" "-v" "--verbose" "--version" "-vv")
+    OPTS=("-f" "--force" "-h" "--help" "--history" "-i" "--interactive" "-q" "--quiet" "-v" "--verbose" "--version" "-vv")
     TRASHDIR=$HOME/.local/share/Trash
     VERBOSITYLEVEL=-1
     VERSION=1.0
@@ -78,6 +79,53 @@ initialize() {
 
     # get the next transaction id
     TRANSACTION=$(expr `tail -n 1 $TRASHDIR/data/transactions | cut -f 1` + 1)
+}
+
+listHistory() {
+    TRANSACTION_IDS=`cut -f 1 $TRASHDIR/data/transactions | uniq`
+    MAXWIDTH=78
+    totalWidth=$([ $MAXWIDTH -gt `tput cols` ] && echo `tput cols` ] || echo $MAXWIDTH)
+    lastDate=`tail -n 1 $TRASHDIR/data/transactions | cut -f 3`
+
+    # calculate field headers and widths
+    transactionIdFh="TRANSACTION ID"
+    transactionItemFh="ITEM"
+    transactionDateFh="DATE"
+    transactionIdFw=$(expr ${#transactionIdFh} + 3)
+    transactionDateFw=$(expr ${#lastDate} + 1)
+    transactionItemFw=$(expr $(expr $totalWidth - $(expr $transactionIdFw + $transactionDateFw)) - 3)
+
+    headerFormat=" %${transactionIdFw}s | %-${transactionItemFw}s | %-${transactionDateFw}s\n"
+
+    printf "$headerFormat" "$transactionIdFh" "$transactionItemFh" "$transactionDateFh"
+    printf "%.s-" $(seq 1 $totalWidth); echo
+
+    for i in ${TRANSACTION_IDS[@]}
+    do
+        newId=1
+        printf " %${transactionIdFw}s |" "$i"
+
+        local IFS=$'\n'
+
+        for r in `grep "^$i"$'\t' $TRASHDIR/data/transactions`
+        do
+            local IFS=$'\t'
+            arr=($r)
+
+            if [ $newId -eq 1 ]
+            then
+                printf " %-${transactionItemFw}s |" "${arr[1]}"
+                printf " %-${transactionDateFw}s\n" "${arr[2]}"
+            else
+                printf " %${transactionIdFw}s |" " "
+                printf " %-${transactionItemFw}s |" "${arr[1]}"
+                printf " %${transactionDateFw}s\n" " "
+            fi
+
+            newId=0
+        done
+
+    done
 }
 
 # isOpt: checks if a given parameter is an option
@@ -125,6 +173,10 @@ parseOpts() {
                     ;;
                 "-h" | "--help")
                     usage
+                    exit
+                    ;;
+                "--history")
+                    listHistory
                     exit
                     ;;
                 "-i" | "--interactive")
