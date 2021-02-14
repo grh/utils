@@ -82,49 +82,63 @@ initialize() {
 }
 
 listHistory() {
-    TRANSACTION_IDS=`cut -f 1 $TRASHDIR/data/transactions | uniq`
-    MAXWIDTH=78
-    totalWidth=$([ $MAXWIDTH -gt `tput cols` ] && echo `tput cols` ] || echo $MAXWIDTH)
-    lastDate=`tail -n 1 $TRASHDIR/data/transactions | cut -f 3`
+    # Calculate field widths
+    maxWidth=78
+    scrWidth=`tput cols`
+    tIdFw=14
+    tDateFw=19
+    totalWidth=$([ $scrWidth -ge $maxWidth ] && echo $maxWidth || echo $scrWidth)
+    tItemFw=$(expr $(expr $totalWidth - $(expr $tIdFw + $tDateFw)) - 7)
 
-    # calculate field headers and widths
-    transactionIdFh="TRANSACTION ID"
-    transactionItemFh="ITEM"
-    transactionDateFh="DATE"
-    transactionIdFw=$(expr ${#transactionIdFh} + 3)
-    transactionDateFw=$(expr ${#lastDate} + 1)
-    transactionItemFw=$(expr $(expr $totalWidth - $(expr $transactionIdFw + $transactionDateFw)) - 3)
+    # Format field headers
+    tIdFh="TRANSACTION ID"
+    tItemFh="ITEM"
+    tDateFh="DATE"
+    hdrFmt=" %${tIdFw}s | %-${tItemFw}s | %-${tDateFw}s\n"
+    printf "$hdrFmt" "$tIdFh" "$tItemFh" "$tDateFh"
+    printf "%0.s-" $(seq 1 $totalWidth); echo
 
-    headerFormat=" %${transactionIdFw}s | %-${transactionItemFw}s | %-${transactionDateFw}s\n"
-
-    printf "$headerFormat" "$transactionIdFh" "$transactionItemFh" "$transactionDateFh"
-    printf "%.s-" $(seq 1 $totalWidth); echo
-
-    for i in ${TRANSACTION_IDS[@]}
+    # loop through each tId
+    for i in `cut -f 1 $TRASHDIR/data/transactions | uniq`
     do
+        # we've encountered a new Id so print it
         newId=1
-        printf " %${transactionIdFw}s |" "$i"
+        printf " %${tIdFw}s |" "$i"
 
+        # grab all transactions with that Id
         local IFS=$'\n'
 
-        for r in `grep "^$i"$'\t' $TRASHDIR/data/transactions`
+        for t in `grep "^$i"$'\t' $TRASHDIR/data/transactions`
         do
+            # grab the item and date
             local IFS=$'\t'
-            arr=($r)
+            arr=($t)
+            item=${arr[1]}
+            date=${arr[2]}
 
+            # if strlen for item is longer than tItemFw,
+            # truncate it (probably somewhere in the middle)
+            if [ ${#item} -gt $tItemFw ]
+            then
+                local extChars=$(expr $(expr ${#item} - $tItemFw) + 3)
+                local startIdx=$(expr $(expr ${#item} / 2) - $(expr $extChars / 2))
+                item=`sed -r "s/^(.{$startIdx})(.{$extChars})(.*)/\1...\3/" <<< $item`
+            fi
+
+            # if this is a new Id, print out the item and date
+            # otherwise just print out the transaction date
             if [ $newId -eq 1 ]
             then
-                printf " %-${transactionItemFw}s |" "${arr[1]}"
-                printf " %-${transactionDateFw}s\n" "${arr[2]}"
+                printf " %-${tItemFw}s |" "$item"
+                printf " %-${tDateFw}s\n" "$date"
             else
-                printf " %${transactionIdFw}s |" " "
-                printf " %-${transactionItemFw}s |" "${arr[1]}"
-                printf " %${transactionDateFw}s\n" " "
+                printf " %${tIdFw}s |" " "
+                printf " %-${tItemFw}s |" "$item"
+                printf " %${tDateFw}s\n" " "
             fi
 
             newId=0
         done
-
     done
 }
 
@@ -292,8 +306,7 @@ updateTrashInfo() {
 logTransaction() {
     logFile="$TRASHDIR/data/transactions"
     date=`date "$DATEFORMAT"`
-
-    echo -e "$TRANSACTION\t$1\t$date" >> $logFile
+    echo -e "$TRANSACTION\t$(realpath $1)\t$date" >> $logFile
 }
 
 # doSoftDelete: trash all the listed items
