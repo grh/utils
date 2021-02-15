@@ -1,10 +1,12 @@
 #!/bin/bash
 
-# Todo: 
-#   - combined option parsing (i.e., -iv is equivalent to -i -v)
-#   - create and install manpage
+# Todo (in priority order): 
+#   - account for duplicate filenames (i.e., versioning?)
 #   - create restore option
 #   - create a rollback option
+#   - combined option parsing (i.e., -iv is equivalent to -i -v)
+#   - create and install manpage
+#   - implement delete option
 
 #########################################################################
 #
@@ -62,11 +64,13 @@ usage: trash [options] [item1 ...]
 # params: none
 # return: none
 initialize() {
+    ACTION="TRASH"
     DATEFORMAT="+%Y-%m-%dT%H:%M:%S"
-    DELETELIST=()
+    DATE=$(date $DATEFORMAT)
+    FILELIST=()
     INTERACTIVE=0
     OPTIONSLIST=()
-    OPTS=("-f" "--force" "-h" "--help" "--history" "-i" "--interactive" "-q" "--quiet" "-v" "--verbose" "--version" "-vv")
+    OPTS=("-f" "--force" "-h" "--help" "--history" "-i" "--interactive" "-q" "--quiet" "--restore" "-v" "--verbose" "--version" "-vv")
     TRASHDIR=$HOME/.local/share/Trash
     VERBOSITYLEVEL=-1
     VERSION=1.0
@@ -81,20 +85,23 @@ initialize() {
     TRANSACTION=$(expr `tail -n 1 $TRASHDIR/data/transactions | cut -f 1` + 1)
 }
 
+# listHistory: print out a formatted list of trash history
+# params: none
+# return: none
 listHistory() {
     # Calculate field widths
-    maxWidth=78
-    scrWidth=`tput cols`
-    tIdFw=14
-    tDateFw=19
-    totalWidth=$([ $scrWidth -ge $maxWidth ] && echo $maxWidth || echo $scrWidth)
-    tItemFw=$(expr $(expr $totalWidth - $(expr $tIdFw + $tDateFw)) - 7)
+    local maxWidth=78
+    local scrWidth=`tput cols`
+    local tIdFw=14
+    local tDateFw=19
+    local totalWidth=$([ $scrWidth -ge $maxWidth ] && echo $maxWidth || echo $scrWidth)
+    local tItemFw=$(expr $(expr $totalWidth - $(expr $tIdFw + $tDateFw)) - 7)
 
     # Format field headers
-    tIdFh="TRANSACTION ID"
-    tItemFh="ITEM"
-    tDateFh="DATE"
-    hdrFmt=" %${tIdFw}s | %-${tItemFw}s | %-${tDateFw}s\n"
+    local tIdFh="TRANSACTION ID"
+    local tItemFh="ITEM"
+    local tDateFh="DATE"
+    local hdrFmt=" %${tIdFw}s | %-${tItemFw}s | %-${tDateFw}s\n"
     printf "$hdrFmt" "$tIdFh" "$tItemFh" "$tDateFh"
     printf "%0.s-" $(seq 1 $totalWidth); echo
 
@@ -102,19 +109,31 @@ listHistory() {
     for i in `cut -f 1 $TRASHDIR/data/transactions | uniq`
     do
         # we've encountered a new Id so print it
-        newId=1
+        local newId=1
         printf " %${tIdFw}s |" "$i"
 
         # grab all transactions with that Id
         local IFS=$'\n'
+        ts=`grep "^$i"$'\t' $TRASHDIR/data/transactions`
 
-        for t in `grep "^$i"$'\t' $TRASHDIR/data/transactions`
+        # count the number of transactions for id
+        local numTs=0
+        for t in ${ts[@]}
         do
+            numTs=$(expr $numTs + 1)
+        done
+
+        # loop through each transaction and print it
+        local count=0
+        for t in ${ts[@]}
+        do
+            count=$(expr $count + 1)
+
             # grab the item and date
-            local IFS=$'\t'
-            arr=($t)
-            item=${arr[1]}
-            date=${arr[2]}
+            IFS=$'\t'
+            local arr=($t)
+            local item=${arr[1]}
+            local date=${arr[2]}
 
             # if strlen for item is longer than tItemFw,
             # truncate it (probably somewhere in the middle)
@@ -125,16 +144,24 @@ listHistory() {
                 item=`sed -r "s/^(.{$startIdx})(.{$extChars})(.*)/\1...\3/" <<< $item`
             fi
 
+            # if there are many items print out an additional
+            # items message and break out of loop
+            if [ $count -eq 2 ]
+            then
+                printf " %${tIdFw}s |" " "
+                printf " %-${tItemFw}s |\n" "+ $(expr $numTs - 1) more items"
+                break
+            fi
+
             # if this is a new Id, print out the item and date
-            # otherwise just print out the transaction date
+            # otherwise just print out the item
             if [ $newId -eq 1 ]
             then
                 printf " %-${tItemFw}s |" "$item"
                 printf " %-${tDateFw}s\n" "$date"
             else
                 printf " %${tIdFw}s |" " "
-                printf " %-${tItemFw}s |" "$item"
-                printf " %${tDateFw}s\n" " "
+                printf " %-${tItemFw}s |\n" "$item"
             fi
 
             newId=0
@@ -199,11 +226,14 @@ parseOpts() {
                 "-q" | "--quiet")
                     VERBOSITYLEVEL=0
                     ;;
+                "--restore")
+                    ACTION="RESTORE"
+                    ;;
                 "-v" | "--verbose")
                     VERBOSITYLEVEL=1
                     ;;
                 "--version")
-                    echo "delete - version $VERSION"
+                    echo "trash - version $VERSION"
                     exit
                     ;;
                 -vv)
@@ -211,11 +241,11 @@ parseOpts() {
                     OPTIONSLIST[${#OPTIONSLIST[@]}]="-v"
                     ;;
                 *)
-                    if [ -f $1 ] || [ -d $1 ]
+                    if [ -e $1 ] || [ -e $TRASHDIR/files/$(basename $1) ]
                     then
-                        DELETELIST[${#DELETELIST[@]}]=$1
+                        FILELIST[${#FILELIST[@]}]=$1
                     else
-                        echo "Error: unrecognized argument '$1'"
+                        echo "Error: unrecognized file or argument '$1'"
                         exit
                     fi
                     ;;
@@ -248,18 +278,18 @@ parseConfirm() {
 }
 
 # moveFile: moves an item to the trash directory
-# params: the item to move
+# params: the item and its new path
 # return: none
 moveFile() {
     if [ $VERBOSITYLEVEL == 0 ]
     then
-        mv -f $OPTIONSLIST $1 $TRASHDIR/files/ > /dev/null
+        mv -f $OPTIONSLIST $1 $2 > /dev/null
     elif [ $VERBOSITYLEVEL == 2 ]
     then
         printf "mv: "
-        mv -f $OPTIONSLIST $1 $TRASHDIR/files/
+        mv -f $OPTIONSLIST $1 $2
     else
-        mv -f $OPTIONSLIST $1 $TRASHDIR/files/
+        mv -f $OPTIONSLIST $1 $2
     fi
 }
 
@@ -270,9 +300,8 @@ updateTrashInfo() {
     # build the trashinfo command
     fullpath=`realpath $1`
     basename=`basename $1`
-    date=`date "$DATEFORMAT"`
-    contents="[Trash Info]\nPath=$fullpath\nDeletionDate=$date"
-    cmd="echo -e \"$contents\" > $TRASHDIR/info/$basename.trashinfo"
+    contents="[Trash Info]\nPath=$fullpath\nDeletionDate=$DATE"
+    cmd="echo -e \"$contents\" > $TRASHDIR/info/$basename.$2.trashinfo"
 
     # adjust command and prepended output for verbosity level
     if [ $VERBOSITYLEVEL == 0 ]
@@ -304,9 +333,15 @@ updateTrashInfo() {
 # parameters: a list of items that were trashed
 # return: none
 logTransaction() {
-    logFile="$TRASHDIR/data/transactions"
-    date=`date "$DATEFORMAT"`
-    echo -e "$TRANSACTION\t$(realpath $1)\t$date" >> $logFile
+    local logFile="$TRASHDIR/data/transactions"
+    echo -e "$TRANSACTION\t$(realpath $1)\t$DATE" >> $logFile
+}
+
+# getNextVersion: version the item to be trashed
+# params: the item to be trashed
+# return: the next version number
+getNextVersion() {
+    echo $(expr $(ls $TRASHDIR/files/$(basename $1).* | rev | cut -d'.' -f1 | sort -r | head -n 1) + 1)
 }
 
 # doSoftDelete: trash all the listed items
@@ -315,7 +350,7 @@ logTransaction() {
 doSoftDelete() {
     confirm="a"
 
-    for i in ${DELETELIST[@]}
+    for i in ${FILELIST[@]}
     do
         if [ $INTERACTIVE == 1 ]
         then
@@ -326,13 +361,49 @@ doSoftDelete() {
 
         if [ $confirm = "y" ] || [ $confirm = "a" ]
         then
-            moveFile $i
-            updateTrashInfo $i
-            logTransaction $i
+            version=$(getNextVersion $i)
+            moveFile $i $TRASHDIR/files/$i.$version
+            updateTrashInfo $i $version
+            logTransaction $i $version
         fi
+    done
+}
+
+# restore: restore a file/dir from trash to its original path
+# params: the item to restore
+# return: none
+restore() {
+    local basename=`basename $1`
+    
+    # get path from trashinfo
+    local IFS='='
+    local path=(`grep "Path=" $TRASHDIR/info/$basename.trashinfo`)
+
+    # move file from trash to original path
+    mv -f $TRASHDIR/files/$basename ${path[1]}
+
+    # remove the trashinfo file
+    rm -f $TRASHDIR/info/$basename.trashinfo
+}
+
+# doRestore: restores items in FILELIST
+# params: none
+# return: none
+doRestore() {
+    for i in ${FILELIST[@]}
+    do
+        restore $i
     done
 }
 
 initialize
 parseOpts $@
-doSoftDelete
+
+case $ACTION in
+    "RESTORE")
+        doRestore
+        ;;
+    "TRASH")
+        doSoftDelete
+        ;;
+esac
