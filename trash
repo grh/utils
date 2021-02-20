@@ -1,409 +1,51 @@
 #!/bin/bash
 
 # Todo (in priority order): 
-#   - account for duplicate filenames (i.e., versioning?)
 #   - create restore option
 #   - create a rollback option
 #   - combined option parsing (i.e., -iv is equivalent to -i -v)
 #   - create and install manpage
 #   - implement delete option
 
-#########################################################################
-#
-# trash - a soft delete utility for Linux
-#
-# This script moves listed items into the local trash directory and
-# updates trashinfo as required. 
-#
-# MIT License
-#
-# Copyright (c) 2021 Guymon Hall
+BASEDIR=$(dirname $0)
 
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# “Software”), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND,
-# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-# CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-#
-#########################################################################
+. $BASEDIR/trashman/common.sh
 
-# usage: prints usage info and exits
-# params: none
-# return: none
-usage() {
-    echo "trash - a soft delete utility for Linux ($VERSION)
-    
-usage: trash [options] [item1 ...]
-  -f, --force           skip confirmation for all items
-  -h, --help            show this help and exit
-  --history             show transaction history
-  -i, --interactive     confirm trash items (y-yes, n-no, a-all)
-  -q, --quiet           suppress any output
-  -v, --verbose         list items as they are deleted
-  -vv                   additional verbosity
-  --version             show version and exit
+main() {
+    initialize
+    parseOpts $@
 
-  This script moves listed items into the local
-  trash directory and updates trashinfo."
-}
-
-# initialize: assigns script variables
-# params: none
-# return: none
-initialize() {
-    ACTION="TRASH"
-    DATEFORMAT="+%Y-%m-%dT%H:%M:%S"
-    DATE=$(date $DATEFORMAT)
-    FILELIST=()
-    INTERACTIVE=0
-    OPTIONSLIST=()
-    OPTS=("-f" "--force" "-h" "--help" "--history" "-i" "--interactive" "-q" "--quiet" "--restore" "-v" "--verbose" "--version" "-vv")
-    TRASHDIR=$HOME/.local/share/Trash
-    VERBOSITYLEVEL=-1
-    VERSION=1.0
-
-    # make sure TRASHDIR exists and is structured
-    mkdir -p $TRASHDIR/files
-    mkdir -p $TRASHDIR/info
-    mkdir -p $TRASHDIR/data
-    touch $TRASHDIR/data/transactions
-
-    # get the next transaction id
-    TRANSACTION=$(expr `tail -n 1 $TRASHDIR/data/transactions | cut -f 1` + 1)
-}
-
-# listHistory: print out a formatted list of trash history
-# params: none
-# return: none
-listHistory() {
-    # Calculate field widths
-    local maxWidth=78
-    local scrWidth=`tput cols`
-    local tIdFw=14
-    local tDateFw=19
-    local totalWidth=$([ $scrWidth -ge $maxWidth ] && echo $maxWidth || echo $scrWidth)
-    local tItemFw=$(expr $(expr $totalWidth - $(expr $tIdFw + $tDateFw)) - 7)
-
-    # Format field headers
-    local tIdFh="TRANSACTION ID"
-    local tItemFh="ITEM"
-    local tDateFh="DATE"
-    local hdrFmt=" %${tIdFw}s | %-${tItemFw}s | %-${tDateFw}s\n"
-    printf "$hdrFmt" "$tIdFh" "$tItemFh" "$tDateFh"
-    printf "%0.s-" $(seq 1 $totalWidth); echo
-
-    # loop through each tId
-    for i in `cut -f 1 $TRASHDIR/data/transactions | uniq`
-    do
-        # we've encountered a new Id so print it
-        local newId=1
-        printf " %${tIdFw}s |" "$i"
-
-        # grab all transactions with that Id
-        local IFS=$'\n'
-        ts=`grep "^$i"$'\t' $TRASHDIR/data/transactions`
-
-        # count the number of transactions for id
-        local numTs=0
-        for t in ${ts[@]}
-        do
-            numTs=$(expr $numTs + 1)
-        done
-
-        # loop through each transaction and print it
-        local count=0
-        for t in ${ts[@]}
-        do
-            count=$(expr $count + 1)
-
-            # grab the item and date
-            IFS=$'\t'
-            local arr=($t)
-            local item=${arr[1]}
-            local date=${arr[2]}
-
-            # if strlen for item is longer than tItemFw,
-            # truncate it (probably somewhere in the middle)
-            if [ ${#item} -gt $tItemFw ]
-            then
-                local extChars=$(expr $(expr ${#item} - $tItemFw) + 3)
-                local startIdx=$(expr $(expr ${#item} / 2) - $(expr $extChars / 2))
-                item=`sed -r "s/^(.{$startIdx})(.{$extChars})(.*)/\1...\3/" <<< $item`
-            fi
-
-            # if there are many items print out an additional
-            # items message and break out of loop
-            if [ $count -eq 2 ]
-            then
-                printf " %${tIdFw}s |" " "
-                printf " %-${tItemFw}s |\n" "+ $(expr $numTs - 1) more items"
-                break
-            fi
-
-            # if this is a new Id, print out the item and date
-            # otherwise just print out the item
-            if [ $newId -eq 1 ]
-            then
-                printf " %-${tItemFw}s |" "$item"
-                printf " %-${tDateFw}s\n" "$date"
-            else
-                printf " %${tIdFw}s |" " "
-                printf " %-${tItemFw}s |\n" "$item"
-            fi
-
-            newId=0
-        done
-    done
-}
-
-# isOpt: checks if a given parameter is an option
-# params: any item
-# return: 1 if item is in list of options, 0 otherwise
-isOpt() {
-    for opt in ${OPTS[@]}
-    do
-        if [ $1 = $opt ]
-        then
-            return 1
-        fi
-    done
-
-    return 0
-}
-
-# parseOpts: parses command line arguments
-# parameters: the command line arguments array $@
-# return: none
-parseOpts() {
-    if [ $# -eq 0 ]
-    # must have at least 1 argument
-    then
-        echo "Error: no arguments provided"
-        exit
-    else
-        while [ $# -ne 0 ]
-        # loop through arguments
-        do
-            # check if argument is both a file and an option
-            isOpt $1; argIsOpt=$?
-            if [ $argIsOpt = 1 ] && { [ -f $1 ] || [ -d $1 ]; }
-            then
-                echo "Error: $1 is both an option and a file/directory"
-                exit
-            fi
-
-            # at this point, we've determined that there is no
-            # option/filename conflict, so we can parse out each
-            # argument into either the options list or delete list
-            case $1 in
-                "-f" | "--force")
-                    INTERACTIVE=0
-                    ;;
-                "-h" | "--help")
-                    usage
-                    exit
-                    ;;
-                "--history")
-                    listHistory
-                    exit
-                    ;;
-                "-i" | "--interactive")
-                    INTERACTIVE=1
-                    ;;
-                "-q" | "--quiet")
-                    VERBOSITYLEVEL=0
-                    ;;
-                "--restore")
-                    ACTION="RESTORE"
-                    ;;
-                "-v" | "--verbose")
-                    VERBOSITYLEVEL=1
-                    ;;
-                "--version")
-                    echo "trash - version $VERSION"
-                    exit
-                    ;;
-                -vv)
-                    VERBOSITYLEVEL=2
-                    OPTIONSLIST[${#OPTIONSLIST[@]}]="-v"
-                    ;;
-                *)
-                    if [ -e $1 ] || [ -e $TRASHDIR/files/$(basename $1) ]
-                    then
-                        FILELIST[${#FILELIST[@]}]=$1
-                    else
-                        echo "Error: unrecognized file or argument '$1'"
-                        exit
-                    fi
-                    ;;
-            esac
-            shift
-        done
-    fi
-}
-
-# parseConfirm: parses interactive confirmation input
-# parameters: user input from terminal
-# return: 1 if users confirm trash, 0 otherwise
-parseConfirm() {
-    case $1 in
-        "Y" | "y" | "YES" | "Yes" | "yes")
-            confirm='y' 
+    case $ACTION in
+        "EMPTY")
+            . $BASEDIR/trashman/trash.sh
+            empty
+            exit
             ;;
-        "N" | "n" | "NO" | "No" | "no")
-            confirm='n' 
+        "HELP")
+            usage
+            exit
             ;;
-        "A" | "a" | "ALL" | "All" | "all")
-            INTERACTIVE=0
-            confirm='a' 
+        "HISTORY")
+            . $BASEDIR/trashman/history.sh
+            listHistory
+            exit
             ;;
-        *)
-            echo "Error: unrecognized confirmation '$1'"
+        "RESTORE")
+            . $BASEDIR/trashman/restore.sh
+            restore
+            ;;
+        "ROLLBACK")
+            ;;
+        "TRASH")
+            . $BASEDIR/trashman/trash.sh
+            trash
+            exit
+            ;;
+        "VERSION")
+            echo "trashman $VERSION"
             exit
             ;;
     esac
 }
 
-# moveFile: moves an item to the trash directory
-# params: the item and its new path
-# return: none
-moveFile() {
-    if [ $VERBOSITYLEVEL == 0 ]
-    then
-        mv -f $OPTIONSLIST $1 $2 > /dev/null
-    elif [ $VERBOSITYLEVEL == 2 ]
-    then
-        printf "mv: "
-        mv -f $OPTIONSLIST $1 $2
-    else
-        mv -f $OPTIONSLIST $1 $2
-    fi
-}
-
-# updateTrashInfo: creates the trashinfo file for a trashed item
-# params: the item that was trashed
-# return: none
-updateTrashInfo() {
-    # build the trashinfo command
-    fullpath=`realpath $1`
-    basename=`basename $1`
-    contents="[Trash Info]\nPath=$fullpath\nDeletionDate=$DATE"
-    cmd="echo -e \"$contents\" > $TRASHDIR/info/$basename.$2.trashinfo"
-
-    # adjust command and prepended output for verbosity level
-    if [ $VERBOSITYLEVEL == 0 ]
-    then
-        cmd+=" > /dev/null"
-    fi
-
-    if [ $VERBOSITYLEVEL == 2 ]
-    then
-            printf "bash: "
-            echo $cmd
-    fi
-
-    eval $cmd
-
-    # output based on verbosity level
-    if [ $VERBOSITYLEVEL == 1 ]
-    then
-        echo "Trashed '$1'"
-    fi
-
-    if [ $VERBOSITYLEVEL == 2 ]
-    then
-        echo "trash: Trashed '$1'"
-    fi
-}
-
-# logTransaction: logs the items that were trashed
-# parameters: a list of items that were trashed
-# return: none
-logTransaction() {
-    local logFile="$TRASHDIR/data/transactions"
-    echo -e "$TRANSACTION\t$(realpath $1)\t$DATE" >> $logFile
-}
-
-# getNextVersion: version the item to be trashed
-# params: the item to be trashed
-# return: the next version number
-getNextVersion() {
-    echo $(expr $(ls $TRASHDIR/files/$(basename $1).* | rev | cut -d'.' -f1 | sort -r | head -n 1) + 1)
-}
-
-# doSoftDelete: trash all the listed items
-# params: none
-# return: none
-doSoftDelete() {
-    confirm="a"
-
-    for i in ${FILELIST[@]}
-    do
-        if [ $INTERACTIVE == 1 ]
-        then
-            printf "trash: move '$i' to trash? "
-            read confirm
-            parseConfirm $confirm
-        fi
-
-        if [ $confirm = "y" ] || [ $confirm = "a" ]
-        then
-            version=$(getNextVersion $i)
-            moveFile $i $TRASHDIR/files/$i.$version
-            updateTrashInfo $i $version
-            logTransaction $i $version
-        fi
-    done
-}
-
-# restore: restore a file/dir from trash to its original path
-# params: the item to restore
-# return: none
-restore() {
-    local basename=`basename $1`
-    
-    # get path from trashinfo
-    local IFS='='
-    local path=(`grep "Path=" $TRASHDIR/info/$basename.trashinfo`)
-
-    # move file from trash to original path
-    mv -f $TRASHDIR/files/$basename ${path[1]}
-
-    # remove the trashinfo file
-    rm -f $TRASHDIR/info/$basename.trashinfo
-}
-
-# doRestore: restores items in FILELIST
-# params: none
-# return: none
-doRestore() {
-    for i in ${FILELIST[@]}
-    do
-        restore $i
-    done
-}
-
-initialize
-parseOpts $@
-
-case $ACTION in
-    "RESTORE")
-        doRestore
-        ;;
-    "TRASH")
-        doSoftDelete
-        ;;
-esac
+main $@
