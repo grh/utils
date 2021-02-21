@@ -32,6 +32,8 @@ listHistory() {
         # grab all transactions with that Id
         local ts=$(getTransactionsById $i)
 
+        local IFS=$'\n';
+
         # count the number of transactions for id
         local numTs=0
         for t in ${ts[@]}

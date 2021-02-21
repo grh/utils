@@ -12,7 +12,7 @@ logTransaction() {
 # return: all the items for that tId
 getTransactionsById() {
     local IFS=$'\n'
-    echo -e `grep "^$i"$'\t' $TRASHDIR/data/transactions`
+    echo -e "`grep "^$i"$'\t' $TRASHDIR/data/transactions`"
 }
 
 # removeTransactionById: delete a transaction from the log
